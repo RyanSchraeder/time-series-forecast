@@ -1,0 +1,144 @@
+---
+title: "Time-Series Analysis"
+author: "Ryan Schraeder"
+date: '2022-04-17'
+output: pdf_document
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+library(dplyr)
+library(tidyverse)
+library(readxl)
+library(aTSA)
+library(glue)
+library("forecast")
+```
+## Introduction
+The dataset provided consists of housing market information for the United States in 1963, where I'll be diving into time series data to analyze and potentially forecast prices for homes after the time period of this data based upon observed patterns. 
+
+## Importing the Data
+```{r}
+df <- read_excel("/Users/rschraeder/Downloads/pricereg_cust.xls", sheet="Reg Price Qtr", col_names=c("period", "unitedstates", "northeast", "midwest", "south", "west"), range="A6:F232")
+head(df)
+```
+### Null Value Counts
+
+```{r}
+sum(is.na(df))
+```
+### Summary Statistics & Time Series Transformation
+```{r}
+summary(df)
+```
+The summary statistics suggest that the means are much larger than the median, indicating high variance and potential for strong trends.
+
+```{r}
+# Convert columns to datetime/time series by the period column.
+df_ts <- ts(df, start=c(1963,1), frequency=4)
+```
+After converting the data to time series, we can observe plots for trends, seasonality, and any notable patterns. 
+
+### Linear Plot
+
+```{r}
+plot(
+  df_ts,
+  main="All Variables in Time Series"
+)
+```
+
+### Log Transform 
+
+```{r}
+log_df<-log(df_ts)
+plot(log_df, main="Logarithmic Transformation")
+```
+Based upon the linear plots, a similar trend can be observed throughout the data from the midwest, south, and west regions of the United States. A drop occurs after 2010 and climbs after 2015. In the log transformation, a smooth upward trend can be observed similarly across all variables. 
+
+## Stationarity 
+
+To best understand the data, a stationary set will need to be utilized. Testing the data for stationarity will accomplish value for forecasting. 
+```{r include=FALSE}
+## Time series stationary tests
+
+# adf_tests <- function(data=data.frame) {
+#     for (column in data) {
+#       for (name in data) {
+#         if (name != "NA") {
+#         print(glue("Running ADF Test for Column - {colnames(data)[name]}"))
+#         adf.test(data[,column])
+#         } else {
+#           break # If the name of the column is not null, keep looping. otherwise, kill the loop.
+#         }
+#     }
+#   }
+# }
+# adf_tests(data=df_ts)
+# Printing ADF Tests Manually by Column. My Loop didn't work as cleanly as I'd hoped. 
+```
+
+```{r}
+# Manual ADF Tests by Column. Tests for Stationarity by P-Value for a Test-Statistic. 
+adf.test(log_df[,2])
+adf.test(log_df[,3])
+adf.test(log_df[,4])
+adf.test(log_df[,5])
+adf.test(log_df[,6])
+```
+Among all tests, no P-values consistently prove stationarity. So, the data needs to be transformed with a differencing method for smoothing, or in other words, removing any trends for consistent data. I'm going to use difference transform, since the upward trend is very aggressive for this data. 
+
+## Smoothing
+
+```{r}
+smoothed_df<-diff(log_df, lag=3, differences=1) ## Getting differences by quarter (lag = 3 or 3 months)
+adf.test(smoothed_df[,2])
+adf.test(smoothed_df[,3])
+adf.test(smoothed_df[,4])
+adf.test(smoothed_df[,5])
+adf.test(smoothed_df[,6])
+```
+
+The P-Values are revealing a much more sound set of variables with stationarity. The data can be forecasted with confidence, and a further glance of the patterns can be observed in another plot matrix: 
+```{r}
+plot.ts(smoothed_df, main="Differencing Output on Logarithmic Transformations")
+```
+## Forming the Time-Series Forecast 
+
+The behavior of the data is consistent, and less influenced by time. This indication of stationary data is perfect for a forecasting model, in which the correct values for an ARIMA (Autoregressive Integrated Moving Average) model may be selected and proper simulation of this moving average can be used to predict a future trend. In this case, I want to see where the housing market may be in each region with accordance to past differences. 
+
+```{r}
+pacf(smoothed_df[,2], lag.max=20) # plot 
+pacf(smoothed_df[,2], lag.max=20, plot=FALSE) ## values only
+```
+
+In this correlogram, the key focus is to pay attention to the dotted blue lines, which represent significance boundaries. If within those boundaries, averages can be considered statistically significant. Thus, the significant values may be selected as the orders for the ARIMA. Since the values are zero after roughly lag 2.5, a fair order could be an ARMA(2.5,0) selection. To make this easier, I'll use the `auto.arima()` function from the forecast library. 
+
+```{r}
+fit<-auto.arima(smoothed_df[,2])
+arima<-arima(smoothed_df[,2], order=c(3,0,1))
+forecast_test<-forecast(arima, h=4, level=c(99.5))
+```
+
+The selection for the model being ARIMA(0,1,3) falls within bounds of the witnessed plot, where the difference of lag 2.5 and 3 showed the nearest to zero. The most accurate assumption here is that the model will forecast within bounds of each, and what this specifically means is the difference in housing price over 1-3 months can dictate the most accurate price in a a future estimate. Being the ARIMA uses a moving average, the prediction can be widely trusted with the reduction of "noise" and consistent pattern. 
+
+To ensure the significance bounds are themselves trustworthy, I will use the "Ljung-Box" test to plot residuals. 
+```{r}
+Box.test(smoothed_df[,2], lag=20, type="Ljung-Box")
+acf(forecast_test$residuals, lag.max=20)
+```
+The residuals are much cleaner, showing most values are within bounds and consistent. This indicates a reliable forecasting model that can be used to generate predictions and be related back to the original data. 
+
+```{r}
+plot(forecast(fit, 4), xlab="Date", ylab="Price", main="ARIMA Forecast for House Prices")
+```
+# Clarifying Assumptions
+
+Given the log transform process and differencing method, the data was much easier to work with as stationary for an ARIMA model being the best case. Selecting the United States overall as a target variable allowed for much more information that can surmise a trustworthy forecast. The increase in price after 2020 appears accurate as we know, and certainly the housing crash of 2008 is evident. The dates are behind in this data and the predictive interval ARIMA calculates is not robust enough to extend so far into the future (even to present day). If I were to continue forward, I'd check back in 4 months and retrieve updated data, then potentially try the keener stochastic models Holt-Winters' exponential smoothing provides. I have noticed ARIMA is far complex but very accurate if given the correct transformations, however. This has been very entertaining and I'm excited for more!
+
+
+### References
+- https://otexts.com/fpp2/stationarity.html 
+- https://www.statology.org/dickey-fuller-test-in-r/ 
+- https://machinelearningmastery.com/remove-trends-seasonality-difference-transform-python/ 
+- https://a-little-book-of-r-for-time-series.readthedocs.io/en/latest/src/timeseries.html 
